@@ -2,22 +2,85 @@
 import importlib
 import os
 import sys
+from functools import wraps
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import Mock
+
+
+def _is_module_in_allowed_dirs(
+    module_name: str,
+    base_dir: str,
+    allowed_dirs: Optional[List[str]],
+) -> bool:
+    """
+    Check if a module's file is within the allowed directories.
+
+    Args:
+        module_name: The fully qualified module name.
+        base_dir: Base directory (resolved relative to cwd).
+        allowed_dirs: List of allowed directories (relative to base_dir or absolute).
+            If None, all modules within base_dir are allowed.
+
+    Returns:
+        True if the module is within allowed directories, False otherwise.
+        Returns False for modules without a __file__ (built-in modules).
+    """
+    if module_name not in sys.modules:
+        return False
+
+    module = sys.modules[module_name]
+    if module is None:
+        return False
+
+    # Get module file path
+    module_file = getattr(module, "__file__", None)
+    if module_file is None:
+        # Built-in modules or namespace packages - skip them (don't patch)
+        return False
+
+    # Resolve to absolute path
+    try:
+        module_path = os.path.normpath(os.path.abspath(module_file))
+    except (TypeError, OSError):
+        return False
+
+    # Resolve base_dir to absolute path
+    abs_base_dir = os.path.normpath(os.path.abspath(base_dir))
+
+    # Determine which directories to check
+    if allowed_dirs is not None:
+        # allowed_dirs are relative to base_dir (or absolute)
+        dirs_to_check = []
+        for allowed_dir in allowed_dirs:
+            if os.path.isabs(allowed_dir):
+                dirs_to_check.append(os.path.normpath(allowed_dir))
+            else:
+                dirs_to_check.append(os.path.normpath(os.path.join(abs_base_dir, allowed_dir)))
+    else:
+        # If no allowed_dirs specified, use base_dir itself
+        dirs_to_check = [abs_base_dir]
+
+    # Check if module is within any allowed directory
+    for abs_allowed_dir in dirs_to_check:
+        # Check if module is within this directory
+        if module_path.startswith(abs_allowed_dir + os.sep) or module_path == abs_allowed_dir:
+            return True
+
+    return False
 
 
 class DeepMockConfig:
     """Global configuration for deep_mock defaults. Set these in conftest.py."""
 
     base_dir: str = "."
-    allowed_dirs: list[str] | None = None
+    allowed_dirs: Optional[List[str]] = None
 
     @classmethod
     def configure(
         cls,
-        base_dir: str | None = None,
-        allowed_dirs: list[str] | None = None,
+        base_dir: Optional[str] = None,
+        allowed_dirs: Optional[List[str]] = None,
     ):
         """Configure default values for deep_mock."""
         if base_dir is not None:
@@ -72,6 +135,7 @@ def _reload_module_in_place(module_name: str) -> None:
 
 # As the name says, just an empty decorator to be used as a fake
 def fake_useless_decorator(func):
+    @wraps(func)
     def inner(*args, **kwargs):
         return func(*args, **kwargs)
 
@@ -80,10 +144,10 @@ def fake_useless_decorator(func):
 
 # Utility method to help us filter out calls in a mock
 def find_calls_in_mock_calls(
-    mock,
+    mock: Mock,
     call_name: str,
-    call_filter: Callable[[tuple, dict[str, Any]], bool] | None = None,
-):
+    call_filter: Optional[Callable[[tuple, Dict[str, Any]], bool]] = None,
+) -> List[Tuple[str, tuple, dict]]:
     res = []
     for mock_call_name, mock_call_args, mock_call_kwargs in mock.mock_calls:
         # Check name
@@ -105,12 +169,23 @@ def find_calls_in_mock_calls(
 def _find_modules_with_imported_attr(
     source_module_name: str,
     attr_name: str,
-) -> list[str]:
+    base_dir: str = ".",
+    allowed_dirs: Optional[List[str]] = None,
+) -> List[str]:
     """
     Find all loaded modules that have imported `attr_name` from `source_module_name`.
 
     This handles both absolute and relative imports by checking if the attribute
     in the importing module points to the same object as in the source module.
+
+    Args:
+        source_module_name: The module where the attribute is defined.
+        attr_name: The name of the attribute to search for.
+        base_dir: Base directory for filtering modules.
+        allowed_dirs: List of directories to limit scanning to. If None, uses base_dir.
+
+    Returns:
+        List of module names that imported the attribute and are within allowed directories.
     """
     res = []
 
@@ -131,6 +206,10 @@ def _find_modules_with_imported_attr(
         if mod_name == source_module_name:
             continue
 
+        # Filter by allowed directories
+        if not _is_module_in_allowed_dirs(mod_name, base_dir, allowed_dirs):
+            continue
+
         try:
             if hasattr(mod, attr_name):
                 mod_attr = getattr(mod, attr_name)
@@ -143,26 +222,51 @@ def _find_modules_with_imported_attr(
     return res
 
 
-# Mocks the sys.modules and returns a cleanup function
 def mock_sys_modules(
-    override_modules: list[tuple[str, str, Mock]] = [],
+    override_modules: Optional[List[Tuple[str, str, Any]]] = None,
     base_dir: str = ".",
-    allowed_dirs: list[str] | None = None,
-) -> Callable:
+    allowed_dirs: Optional[List[str]] = None,
+) -> Callable[[], None]:
+    """
+    Apply mocks to modules and return a cleanup function.
+
+    Patches specified attributes in source modules and all modules that imported
+    them (within allowed directories), then reloads affected modules so module-level
+    state is recomputed with mocked values.
+
+    Args:
+        override_modules: List of (module_name, attr_name, mock) tuples specifying
+            what to mock. If None or empty, no mocking is performed.
+        base_dir: Base directory for filtering which modules to patch/reload.
+            Defaults to current directory.
+        allowed_dirs: List of directories (relative to base_dir or absolute) to
+            limit which modules are patched/reloaded. If None, uses base_dir.
+
+    Returns:
+        A cleanup function that restores original values and reloads modules.
+
+    Warning:
+        This function modifies ``sys.modules`` globally and is NOT thread-safe.
+        Do not use with parallel test runners (e.g., pytest-xdist) unless tests
+        are isolated in separate processes.
+
+    Example:
+        >>> cleanup = mock_sys_modules([("myapp.db", "fetch", mock)])
+        >>> try:
+        ...     # test code
+        ... finally:
+        ...     cleanup()
+    """
+    if override_modules is None:
+        override_modules = []
+
     importlib.invalidate_caches()
 
     # Deduplicate override_modules, keeping last occurrence
-    modules = []
-    for override_module in override_modules:
-        module_found = False
-        for module_name, module_prop, module_mock in modules:
-            if module_name == override_module[0] and module_prop == override_module[1]:
-                modules.remove((module_name, module_prop, module_mock))
-                modules.append(override_module)
-                module_found = True
-                break
-        if not module_found:
-            modules.append(override_module)
+    seen = {}
+    for module_name, attr_name, mock in override_modules:
+        seen[(module_name, attr_name)] = (module_name, attr_name, mock)
+    modules = list(seen.values())
 
     # Import the modules we need to mock so they are present in sys.modules
     for module_name, module_prop, module_mock in modules:
@@ -190,7 +294,10 @@ def mock_sys_modules(
         mocks[(module_name, module_prop)] = module_mock
 
         # Find all modules that imported this attribute BEFORE we patch
-        importing_modules = _find_modules_with_imported_attr(module_name, module_prop)
+        # Filter by allowed directories
+        importing_modules = _find_modules_with_imported_attr(
+            module_name, module_prop, base_dir, allowed_dirs
+        )
 
         # Patch the source module
         cleanup_list.append((module_name, module_prop, original_value))
@@ -230,6 +337,10 @@ def mock_sys_modules(
                 continue
             new_mod = sys.modules[new_mod_name]
             if new_mod is None:
+                continue
+
+            # Filter by allowed directories
+            if not _is_module_in_allowed_dirs(new_mod_name, base_dir, allowed_dirs):
                 continue
 
             # Check if this new module has any of our mocked attributes
@@ -294,13 +405,34 @@ def import_and_reload_module(module_name: str) -> ModuleType:
 
 
 class MockSysModules:
-    mock_sys_modules_cleanup: Callable | None = None
+    """
+    Context manager for mocking module attributes with automatic reload.
+
+    Patches specified attributes in source modules and all modules that imported
+    them, then reloads affected modules so module-level state is recomputed with
+    mocked values. On exit, restores original values and reloads again.
+
+    Warning:
+        This class modifies ``sys.modules`` globally and is NOT thread-safe.
+        Do not use with parallel test runners (e.g., pytest-xdist) unless tests
+        are isolated in separate processes.
+
+    Example:
+        >>> mock_fetch = Mock(return_value={"id": "1", "name": "Test"})
+        >>> with MockSysModules([
+        ...     ("myapp.database", "fetch_user", mock_fetch),
+        ... ]):
+        ...     from myapp.services import user_service
+        ...     assert user_service.get_user("1")["name"] == "Test"
+    """
+
+    mock_sys_modules_cleanup: Optional[Callable[[], None]] = None
 
     def __init__(
         self,
-        override_modules: list[tuple[str, str, Any]] | None = None,
-        base_dir: str | None = None,
-        allowed_dirs: list[str] | None = None,
+        override_modules: Optional[List[Tuple[str, str, Any]]] = None,
+        base_dir: Optional[str] = None,
+        allowed_dirs: Optional[List[str]] = None,
     ):
         self.override_modules = override_modules or []
         # Use provided values or fall back to config defaults
@@ -322,7 +454,7 @@ class MockSysModules:
 
 # Utility method that will print out all mock calls
 # It can help us debug and write tests
-def print_all_mock_calls(mock):
+def print_all_mock_calls(mock: Mock) -> None:
     print("--------------------------------")
     print("     Printing all mock calls    ")
     print("--------------------------------")

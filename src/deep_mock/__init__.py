@@ -16,6 +16,7 @@ __version__ = "0.1.0"
 __all__ = [
     "DeepMockConfig",
     "MockSysModules",
+    "__version__",
     "fake_useless_decorator",
     "find_calls_in_mock_calls",
     "import_and_reload_module",

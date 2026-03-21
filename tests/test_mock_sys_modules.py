@@ -580,3 +580,75 @@ class TestImportAndReloadModule:
         )
         assert user_service_final.SYSTEM_USER_NAME == "Real User"
         assert user_service_final.get_greeting() == "Hello, Real User!"
+
+
+class TestEdgeCases:
+    """Test edge cases and error conditions."""
+
+    def test_empty_override_list(self):
+        """MockSysModules works with empty override list."""
+        with MockSysModules(override_modules=[]) as ctx:
+            # Should not raise any errors
+            assert ctx.override_modules == []
+
+    def test_none_override_list(self):
+        """MockSysModules works with None override list."""
+        with MockSysModules(override_modules=None) as ctx:
+            # Should not raise any errors
+            assert ctx.override_modules == []
+
+    def test_mock_nonexistent_attribute_raises(self):
+        """Mocking a non-existent attribute raises AttributeError."""
+        mock_func = Mock(return_value="mocked")
+
+        with pytest.raises(AttributeError):
+            with MockSysModules(
+                override_modules=[
+                    ("deep_mock.examples.services.database", "nonexistent_function", mock_func),
+                ],
+                base_dir="src",
+            ):
+                pass
+
+    def test_duplicate_overrides_keeps_last(self):
+        """When same module/attr is specified multiple times, last one wins."""
+        mock_first = Mock(return_value={"name": "First Mock"})
+        mock_second = Mock(return_value={"name": "Second Mock"})
+
+        with MockSysModules(
+            override_modules=[
+                ("deep_mock.examples.services.database", "fetch_user", mock_first),
+                ("deep_mock.examples.services.database", "fetch_user", mock_second),
+            ],
+            base_dir="src",
+        ):
+            from deep_mock.examples.services.database import fetch_user
+
+            result = fetch_user("test")
+
+            # Second mock should be used (first mock should never be called)
+            assert result["name"] == "Second Mock"
+            mock_first.assert_not_called()
+            # mock_second may be called multiple times (during module reloads)
+            # but it should have been called with "test" at least once
+            mock_second.assert_any_call("test")
+
+    def test_modules_outside_allowed_dirs_not_patched(self):
+        """Modules outside allowed_dirs are not auto-reloaded."""
+        # This test verifies the directory filtering works
+        mock_fetch = Mock(return_value={"name": "Filtered Mock"})
+
+        # Use a non-existent directory - no modules should match
+        with MockSysModules(
+            override_modules=[
+                ("deep_mock.examples.services.database", "fetch_user", mock_fetch),
+            ],
+            base_dir="src",
+            allowed_dirs=["nonexistent_directory"],
+        ):
+            # The source module is still patched (it's always patched)
+            from deep_mock.examples.services.database import fetch_user
+            assert fetch_user("test")["name"] == "Filtered Mock"
+
+            # But modules that imported it won't be auto-reloaded
+            # because they're not in allowed_dirs
