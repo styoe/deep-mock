@@ -21,6 +21,24 @@ Even if you patch `load_tax_rate`, `SALES_TAX` still has the original value.
 
 3. **Indirect dependencies are invisible** - If `module_c` imports from `module_b` which imports from `module_a`, patching `module_a` won't affect `module_c`'s module-level state.
 
+4. **Closures / locals / cached references** - If code stores a dependency in a closure, object attribute, singleton, cache, or module global during startup, patching the original source may not change the already-stored reference.
+
+5. **Mocking outside tests scope** - A lot of times, when writing tests, we dont want any side effects calls that are out of the scope of the functionality we are testing. 
+Some examples:
+```from langfuse import observe
+
+@observe
+def myfn(...)
+```
+
+``` from google.cloud import firestore
+@firestore.transactional
+def myfn(...)
+```
+
+Using deep-mock it is easy to patch it everywhere and not worry about it.
+
+
 ## The Solution
 
 `deep-mock` solves all of these problems:
