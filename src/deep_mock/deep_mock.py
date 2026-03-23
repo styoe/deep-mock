@@ -2,10 +2,11 @@
 import importlib
 import os
 import sys
-from functools import wraps
 from types import ModuleType
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from unittest.mock import Mock
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from unittest.mock import Mock
 
 
 def _is_module_in_allowed_dirs(
@@ -135,16 +136,12 @@ def _reload_module_in_place(module_name: str) -> None:
 
 # As the name says, just an empty decorator to be used as a fake
 def fake_useless_decorator(func):
-    @wraps(func)
-    def inner(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return inner
+    return func
 
 
 # Utility method to help us filter out calls in a mock
 def find_calls_in_mock_calls(
-    mock: Mock,
+    mock: "Mock",
     call_name: str,
     call_filter: Optional[Callable[[tuple, Dict[str, Any]], bool]] = None,
 ) -> List[Tuple[str, tuple, dict]]:
@@ -216,7 +213,7 @@ def _find_modules_with_imported_attr(
                 # Check if it's the same object (was imported from source)
                 if mod_attr is original_attr:
                     res.append(mod_name)
-        except Exception:
+        except AttributeError:
             continue
 
     return res
@@ -270,7 +267,7 @@ def mock_sys_modules(
 
     # Import the modules we need to mock so they are present in sys.modules
     for module_name, module_prop, module_mock in modules:
-        importlib.import_module(module_name, module_name)
+        importlib.import_module(module_name)
 
     # Track modules present before patching to detect new imports during context
     modules_before = set(sys.modules.keys())
@@ -311,14 +308,14 @@ def mock_sys_modules(
                 setattr(importing_mod, module_prop, module_mock)
                 # Mark for reload to recompute module-level state with mocked functions
                 preexisting_modules_to_reload.add(importing_mod_name)
-            except Exception:
+            except (KeyError, AttributeError, TypeError):
                 continue
 
     # Reload pre-existing modules so their module-level state is recomputed with mocks
     for mod_name in preexisting_modules_to_reload:
         try:
             _reload_module_in_place(mod_name)
-        except Exception:
+        except ImportError:
             continue
 
     # Build cleanup function to restore original values
@@ -354,7 +351,7 @@ def mock_sys_modules(
                             # Also restore the attribute immediately
                             original = originals[(src_mod_name, attr_name)]
                             setattr(new_mod, attr_name, original)
-                except Exception:
+                except (AttributeError, TypeError):
                     continue
 
         # Restore all tracked modules (pre-existing modules)
@@ -362,7 +359,7 @@ def mock_sys_modules(
             try:
                 if mod_name in sys.modules:
                     setattr(sys.modules[mod_name], attr_name, original_value)
-            except Exception:
+            except (AttributeError, TypeError):
                 continue
 
         # Reload modules that were imported during the context
@@ -370,14 +367,14 @@ def mock_sys_modules(
         for mod_name in modules_to_reload:
             try:
                 _reload_module_in_place(mod_name)
-            except Exception:
+            except ImportError:
                 continue
 
         # Also reload pre-existing modules that were reloaded on entry
         for mod_name in preexisting_modules_to_reload:
             try:
                 _reload_module_in_place(mod_name)
-            except Exception:
+            except ImportError:
                 continue
 
     return _cleanup
@@ -400,7 +397,7 @@ def import_and_reload_module(module_name: str) -> ModuleType:
         importlib.reload(sys.modules[module_name])
         return sys.modules[module_name]
 
-    importlib.import_module(module_name, module_name)
+    importlib.import_module(module_name)
     return sys.modules[module_name]
 
 
@@ -454,7 +451,7 @@ class MockSysModules:
 
 # Utility method that will print out all mock calls
 # It can help us debug and write tests
-def print_all_mock_calls(mock: Mock) -> None:
+def print_all_mock_calls(mock: "Mock") -> None:
     print("--------------------------------")
     print("     Printing all mock calls    ")
     print("--------------------------------")

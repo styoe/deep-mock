@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deep-mock"
-version = "0.1.0"
+version = "1.0.0"
 description = "A Python mocking library"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Ogi Zmaj Dzedaj", email = "ognjen.bozickovic@gmail.com"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -35,12 +35,13 @@ dev = [
     "black>=23.0",
     "isort>=5.0",
     "mypy>=1.0",
+    "ruff>=0.1",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/deep-mock"
-Repository = "https://github.com/yourusername/deep-mock"
-Issues = "https://github.com/yourusername/deep-mock/issues"
+Homepage = "https://github.com/styoe/deep-mock"
+Repository = "https://github.com/styoe/deep-mock"
+Issues = "https://github.com/styoe/deep-mock/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

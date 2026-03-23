@@ -11,13 +11,13 @@ Python's standard `unittest.mock.patch` has limitations:
 2. **Module-level state is not recomputed** - If a module computes values at import time using the function you're mocking, those values remain stale:
 
 ```python
-# cache.py
-from database import fetch_user
+# checkout.py
+from myapp.config import load_tax_rate
 
-SYSTEM_USER = fetch_user("system")  # Computed ONCE at import time
+SALES_TAX = load_tax_rate()  # Computed ONCE at import time
 ```
 
-Even if you patch `fetch_user`, `SYSTEM_USER` still has the original value.
+Even if you patch `load_tax_rate`, `SALES_TAX` still has the original value.
 
 3. **Indirect dependencies are invisible** - If `module_c` imports from `module_b` which imports from `module_a`, patching `module_a` won't affect `module_c`'s module-level state.
 
@@ -84,33 +84,33 @@ with MockSysModules([
 When a module computes values at import time, `deep-mock` automatically reloads it.
 
 ```python
-# myapp/cache.py
-from myapp.database import fetch_user
+# myapp/checkout.py
+from myapp.config import load_tax_rate
 
 # This runs ONCE at import time
-SYSTEM_USER = fetch_user("system")
+SALES_TAX = load_tax_rate()
 
-def get_system_user():
-    return SYSTEM_USER
+def get_sales_tax():
+    return SALES_TAX
 ```
 
 ```python
-# test_cache.py
+# test_checkout.py
 from unittest.mock import Mock
 from deep_mock import MockSysModules
 
-def test_system_user_is_mocked():
-    mock_fetch = Mock(return_value={"id": "system", "name": "Mock Admin"})
+def test_sales_tax_is_mocked():
+    mock_load_tax_rate = Mock(return_value=0.15)
 
     with MockSysModules([
-        ("myapp.database", "fetch_user", mock_fetch),
+        ("myapp.config", "load_tax_rate", mock_load_tax_rate),
     ]):
-        from myapp.cache import get_system_user
+        from myapp.checkout import get_sales_tax
 
-        # SYSTEM_USER was recomputed with the mock!
-        assert get_system_user()["name"] == "Mock Admin"
+        # SALES_TAX was recomputed with the mock!
+        assert get_sales_tax() == 0.15
 
-    # After exiting, SYSTEM_USER is restored to real value
+    # After exiting, SALES_TAX is restored to real value
 ```
 
 ### Example 3: Indirect Dependencies (Edge Case)
@@ -118,22 +118,22 @@ def test_system_user_is_mocked():
 When module C depends on module B which depends on module A, and you mock something in A:
 
 ```python
-# myapp/database.py
-def fetch_user(user_id):
-    return {"id": user_id, "name": "Real User"}
+# myapp/config.py
+def load_tax_rate():
+    return 0.08
 
-# myapp/cache.py
-from myapp.database import fetch_user
-SYSTEM_USER = fetch_user("system")
+# myapp/checkout.py
+from myapp.config import load_tax_rate
+SALES_TAX = load_tax_rate()
 
-def get_system_user():
-    return SYSTEM_USER
+def get_sales_tax():
+    return SALES_TAX
 
-# myapp/user_service.py
-from myapp.cache import get_system_user
+# myapp/pricing.py
+from myapp.checkout import get_sales_tax
 
-# Indirect dependency - imports from cache, not database
-USER_GREETING = f"Hello, {get_system_user()['name']}!"
+# Indirect dependency - imports from checkout, not config
+PRICE_LABEL = f"Tax rate: {get_sales_tax() * 100}%"
 ```
 
 ```python
@@ -142,26 +142,26 @@ from unittest.mock import Mock
 from deep_mock import MockSysModules, import_and_reload_module
 
 def test_indirect_dependency():
-    mock_fetch = Mock(return_value={"id": "system", "name": "Mock User"})
+    mock_load_tax_rate = Mock(return_value=0.15)
 
-    # Import user_service BEFORE mocking
-    from myapp import user_service
-    assert user_service.USER_GREETING == "Hello, Real User!"
+    # Import pricing BEFORE mocking
+    from myapp import pricing
+    assert pricing.PRICE_LABEL == "Tax rate: 8.0%"
 
     with MockSysModules([
-        ("myapp.database", "fetch_user", mock_fetch),
+        ("myapp.config", "load_tax_rate", mock_load_tax_rate),
     ]):
-        # cache is auto-reloaded (direct dependency)
-        from myapp.cache import get_system_user
-        assert get_system_user()["name"] == "Mock User"
+        # checkout is auto-reloaded (direct dependency)
+        from myapp.checkout import get_sales_tax
+        assert get_sales_tax() == 0.15
 
-        # user_service is NOT auto-reloaded (indirect dependency)
-        # Its USER_GREETING still has the old value!
-        assert user_service.USER_GREETING == "Hello, Real User!"
+        # pricing is NOT auto-reloaded (indirect dependency)
+        # Its PRICE_LABEL still has the old value!
+        assert pricing.PRICE_LABEL == "Tax rate: 8.0%"
 
         # Use import_and_reload_module to fix this
-        user_service = import_and_reload_module("myapp.user_service")
-        assert user_service.USER_GREETING == "Hello, Mock User!"
+        pricing = import_and_reload_module("myapp.pricing")
+        assert pricing.PRICE_LABEL == "Tax rate: 15.0%"
 ```
 
 ### Example 4: Mocking Multiple Functions
@@ -315,10 +315,10 @@ Function version of `MockSysModules`. Returns a cleanup function.
 
 ```python
 def mock_sys_modules(
-    override_modules: list[tuple[str, str, Mock]] = [],
+    override_modules: list[tuple[str, str, Any]] | None = None,
     base_dir: str = ".",
     allowed_dirs: list[str] | None = None,
-) -> Callable:
+) -> Callable[[], None]:
     """
     Apply mocks and return a cleanup function.
 
